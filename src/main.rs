@@ -1,4 +1,5 @@
 use bevy::{prelude::*, window::PrimaryWindow};
+use bevy_rapier2d::na::ComplexField;
 use rand::prelude::*;
 
 #[derive(Component)]
@@ -63,6 +64,7 @@ fn main() {
                 spawn_bombs,
                 plane_spawn_timer_update,
                 bomb_spawn_timer_update,
+                rocket_collision.run_if(run_if_rockets_and_planes),
                 plane_update.run_if(run_if_planes),
                 bomb_spawn_timer_update.run_if(run_if_planes),
                 rocket_update.run_if(run_if_rockets),
@@ -232,6 +234,23 @@ fn update_bombs(
     }
 }
 
+fn rocket_collision(
+    mut commands: Commands,
+    plane_query: Query<(Entity, &Transform), With<Plane>>,
+    rocket_query: Query<(Entity, &Transform), With<Rocket>>
+) {
+    for (plane_entity, plane_transform) in plane_query.iter() {
+        for (rocket_entity, rocket_transform) in rocket_query.iter() {
+            println!("Plane distance: {:?}", plane_transform.translation.distance(rocket_transform.translation));
+            if plane_transform.translation.distance(rocket_transform.translation) < 1.0 {
+                println!("Hit");
+                // commands.entity(plane_entity).despawn();
+                // commands.entity(rocket_entity).despawn();
+            }
+        }
+    }
+}
+
 fn plane_spawn_timer_update(mut plane_spawn_timer: ResMut<PlaneSpawnTimer>, time: Res<Time>) {
     plane_spawn_timer.timer.tick(time.delta());
 }
@@ -252,4 +271,12 @@ fn run_if_planes(plane_query: Query<(), With<Plane>>) -> bool {
 
 fn run_if_bombs(bomb_query: Query<(), With<Bomb>>) -> bool {
     !bomb_query.is_empty()
+}
+fn run_if_rockets_and_planes(plane_query: Query<(), With<Plane>>, rocket_query: Query<(), With<Rocket>>) -> bool {
+    if !rocket_query.is_empty() && !plane_query.is_empty() {
+        true
+    }
+    else {
+        false
+    }
 }
