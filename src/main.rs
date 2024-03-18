@@ -1,4 +1,8 @@
-use bevy::{prelude::*, window::PrimaryWindow};
+use bevy::{
+    math::bounding::{Aabb2d, Bounded2d, BoundingVolume, IntersectsVolume},
+    prelude::*,
+    window::PrimaryWindow,
+};
 use bevy_rapier2d::na::ComplexField;
 use rand::prelude::*;
 
@@ -32,28 +36,22 @@ struct PlaneSpawnTimer {
 impl Default for PlaneSpawnTimer {
     fn default() -> Self {
         Self {
-            timer: Timer::from_seconds(10.0, TimerMode::Repeating),
+            timer: Timer::from_seconds(2.0, TimerMode::Repeating),
         }
     }
 }
 
-#[derive(Resource)]
-struct BombSpawnTimer {
-    timer: Timer,
-}
+#[derive(Component)]
+struct Collider;
 
-impl Default for BombSpawnTimer {
-    fn default() -> Self {
-        Self {
-            timer: Timer::from_seconds(3.0, TimerMode::Repeating),
-        }
-    }
-}
+#[derive(Event, Default)]
+struct CollisionEvent;
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .init_resource::<PlaneSpawnTimer>()
-        .init_resource::<BombSpawnTimer>()
+        .add_event::<CollisionEvent>()
         .add_systems(Startup, (setup_camera, spawn_player))
         .add_systems(
             Update,
@@ -64,13 +62,13 @@ fn main() {
                 spawn_bombs,
                 plane_spawn_timer_update,
                 bomb_spawn_timer_update,
-                rocket_collision.run_if(run_if_rockets_and_planes),
                 plane_update.run_if(run_if_planes),
                 bomb_spawn_timer_update.run_if(run_if_planes),
                 rocket_update.run_if(run_if_rockets),
-                update_bombs.run_if(run_if_bombs)
+                update_bombs.run_if(run_if_bombs),
             ),
         )
+        .add_systems(FixedUpdate, rocket_collision.run_if(run_if_rockets_and_planes))
         .run();
 }
 
@@ -97,8 +95,9 @@ fn spawn_player(
             ..default()
         },
         Player {
-            movement_speed: 500.0
-        }
+            movement_speed: 500.0,
+        },
+        Collider,
     ));
 }
 
@@ -177,6 +176,7 @@ fn spawn_planes(
                 bomb_spawn_timer: Timer::from_seconds(2.0, TimerMode::Repeating),
                 number_of_bombs: 1,
             },
+            Collider,
         ));
     }
 }
@@ -200,7 +200,7 @@ fn plane_update(
 fn spawn_bombs(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    plane_query: Query<(&Transform, &Plane), With<Plane>>
+    plane_query: Query<(&Transform, &Plane), With<Plane>>,
 ) {
     for (plane_transform, plane) in plane_query.iter() {
         if plane.bomb_spawn_timer.finished() {
@@ -217,7 +217,6 @@ fn spawn_bombs(
             ));
         }
     }
-   
 }
 
 fn update_bombs(
@@ -236,30 +235,76 @@ fn update_bombs(
 
 fn rocket_collision(
     mut commands: Commands,
-    plane_query: Query<(Entity, &Transform), With<Plane>>,
-    rocket_query: Query<(Entity, &Transform), With<Rocket>>
+    rocket_query: Query<(Entity, &Transform), With<Rocket>>,
+    collider_query: Query<(Entity, &Transform, Option<&Plane>), With<Collider>>,
+    mut collision_events: EventWriter<CollisionEvent>,
 ) {
-    for (plane_entity, plane_transform) in plane_query.iter() {
-        for (rocket_entity, rocket_transform) in rocket_query.iter() {
-            println!("Plane distance: {:?}", plane_transform.translation.distance(rocket_transform.translation));
-            if plane_transform.translation.distance(rocket_transform.translation) < 1.0 {
-                println!("Hit");
-                // commands.entity(plane_entity).despawn();
-                // commands.entity(rocket_entity).despawn();
+    for (rocket_entity, rocket_transform) in rocket_query.iter() {
+        for (collider_entity, collider_transform, plane) in &collider_query {
+            let collision = is_collision(
+                Aabb2d::new(
+                    rocket_transform.translation.truncate(),
+                    rocket_transform.scale.truncate() / 2.0,
+                ),
+                Aabb2d::new(
+                    collider_transform.translation.truncate(),
+                    collider_transform.scale.truncate() / 2.,
+                ),
+            );
+
+            if let Some(collision) = collision {
+                collision_events.send_default();
+                if plane.is_some() {
+                    commands.entity(collider_entity).despawn();
+                    commands.entity(rocket_entity).despawn();
+                }
             }
         }
     }
+}
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+enum Collision {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+fn is_collision(colliding: Aabb2d, collider: Aabb2d) -> Option<Collision> {
+    if !&colliding.intersects(&collider) {
+        println!("rocket: {:?}, plane: {:?}", colliding, collider);
+        return None;
+    }
+
+    let closest = collider.closest_point(colliding.center());
+    let offset = colliding.center() - closest;
+    let side = if offset.x.abs() > offset.y.abs() {
+        if offset.x < 0. {
+            Collision::Left
+        } else {
+            Collision::Right
+        }
+    } else if offset.y > 0. {
+        Collision::Top
+    } else {
+        Collision::Bottom
+    };
+
+    Some(side)
 }
 
 fn plane_spawn_timer_update(mut plane_spawn_timer: ResMut<PlaneSpawnTimer>, time: Res<Time>) {
     plane_spawn_timer.timer.tick(time.delta());
 }
 
-fn bomb_spawn_timer_update(mut bomb_spawn_timer_query: Query<&mut Plane, With<Plane>>, time: Res<Time>) {
+fn bomb_spawn_timer_update(
+    mut bomb_spawn_timer_query: Query<&mut Plane, With<Plane>>,
+    time: Res<Time>,
+) {
     for mut plane in bomb_spawn_timer_query.iter_mut() {
         plane.bomb_spawn_timer.tick(time.delta());
     }
-    
 }
 fn run_if_rockets(rocket_query: Query<(), With<Rocket>>) -> bool {
     !rocket_query.is_empty()
@@ -272,11 +317,13 @@ fn run_if_planes(plane_query: Query<(), With<Plane>>) -> bool {
 fn run_if_bombs(bomb_query: Query<(), With<Bomb>>) -> bool {
     !bomb_query.is_empty()
 }
-fn run_if_rockets_and_planes(plane_query: Query<(), With<Plane>>, rocket_query: Query<(), With<Rocket>>) -> bool {
+fn run_if_rockets_and_planes(
+    plane_query: Query<(), With<Plane>>,
+    rocket_query: Query<(), With<Rocket>>,
+) -> bool {
     if !rocket_query.is_empty() && !plane_query.is_empty() {
         true
-    }
-    else {
+    } else {
         false
     }
 }
